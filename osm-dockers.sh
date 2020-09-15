@@ -1,3 +1,5 @@
+#! /bin/bash
+
 WORLD=0
 MAKE_BACKUP=1
 OSM_PREFIX=OSM
@@ -52,6 +54,20 @@ function CREATE_BACKUP_DIR()
 	tar -czvf $BACKUP_DIR/$VOLUME_NAME.tar.gz -C $VOLUME_DIR $VOLUME_DIR/$VOLUME_NAME
 }
 
+function DOWNLOAD_FILE()
+{
+	local FILENAME=$1
+	local DOWNLOAD_PREFIX=$2
+	local RAW_DATA_DIR=$3
+
+	local FILE=$RAW_DATA_DIR/$FILENAME
+	if [ ! -f "$FILE" ]; then
+	echo $FILE does not exist, download it...
+	wget $DOWNLOAD_PREFIX/$FILENAME -P $RAW_DATA_DIR
+	fi
+}
+
+
 #############
 
 mkdir -p $VOLUME_DIR
@@ -67,14 +83,7 @@ fi
 
 ###############
 
-FILENAME=$PBF
-DOWNLOAD_PREFIX=$PBF_DOWNLOAD_PREFIX
-
-FILE=$RAW_DATA_DIR/$FILENAME
-if [ ! -f "$FILE" ]; then
-	echo "$FILE does not exist, download it..."
-	wget $DOWNLOAD_PREFIX/$FILENAME -P $RAW_DATA_DIR
-fi
+DOWNLOAD_FILE $PBF $PBF_DOWNLOAD_PREFIX $RAW_DATA_DIR
 
 ###############
 echo https://switch2osm.org/
@@ -122,15 +131,7 @@ NOMI_BIND=$VOLUME_DIR/$NOMI_NAME
 NOMI_WIKI=wikimedia-importance.sql.gz
 NOMI_WIKI_DOWNLOAD_PREFIX=https://www.nominatim.org/data
 
-FILENAME=$NOMI_WIKI
-DOWNLOAD_PREFIX=$NOMI_WIKI_DOWNLOAD_PREFIX
-
-FILE=$RAW_DATA_DIR/$FILENAME
-if [ ! -f "$FILE" ]; then
-	echo "$FILE does not exist, download it..."
-	wget $DOWNLOAD_PREFIX/$FILENAME -P $RAW_DATA_DIR
-fi
-
+DOWNLOAD_FILE $NOMI_WIKI $NOMI_WIKI_DOWNLOAD_PREFIX $RAW_DATA_DIR
 
 mkdir -p $NOMI_BIND
 rm -Rf $NOMI_BIND/postgresdata
@@ -157,4 +158,3 @@ fi
 #######################
 
 echo Done!
-
