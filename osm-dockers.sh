@@ -2,11 +2,13 @@
 
 WORLD=0
 MAKE_BACKUP=1
-OSM_PREFIX=OSM
+OSM_PREFIX=osm-13
 
 VOLUME_DIR=/media/gold/$OSM_PREFIX
 BACKUP_DIR=/media/gold/$OSM_PREFIX-Backup
 RAW_DATA_DIR=/home/user/$OSM_PREFIX
+TILER_PORT=8080
+NOMINATIM_PORT=7070
 
 ##############
 
@@ -51,7 +53,7 @@ function CREATE_BACKUP_DIR()
 	local OUTPUT=$BACKUP_DIR/"$(IMAGE_NAME_TO_FILE_NAME $VOLUME_NAME)".tar.gz
 
 	echo zipping the volume into $OUTPUT...
-	tar -czvf $BACKUP_DIR/$VOLUME_NAME.tar.gz -C $VOLUME_DIR $VOLUME_DIR/$VOLUME_NAME
+	tar -czvf $BACKUP_DIR/$VOLUME_NAME.tar.gz -C $VOLUME_DIR/$VOLUME_NAME .
 }
 
 function DOWNLOAD_FILE()
@@ -93,29 +95,55 @@ TILER_DOCKER_FULL_NAME=$TILER_DOCKER_NAME
 TILER_DOCKER_FULL_FILENAME="$(IMAGE_NAME_TO_FILE_NAME $TILER_DOCKER_FULL_NAME)"
 
 TILER_NAME=$TILER_DOCKER_FULL_FILENAME-volume-$PBF
-TILER_VOLUME=$TILER_NAME
+TILER_DATA_VOLUME=$OSM_PREFIX-data-$TILER_NAME
+TILER_TILES_VOLUME=$OSM_PREFIX-tiles-$TILER_NAME
+TILER_NODES_VOLUME=$OSM_PREFIX-nodes-$TILER_NAME
 
 time docker pull $TILER_DOCKER_FULL_NAME
 
-mkdir $VOLUME_DIR/$TILER_VOLUME
-docker volume create --name $TILER_VOLUME --opt type=none --opt device=$VOLUME_DIR/$TILER_VOLUME --opt o=bind
+mkdir $VOLUME_DIR/$TILER_DATA_VOLUME
+docker volume create --name $TILER_DATA_VOLUME --opt type=none --opt device=$VOLUME_DIR/$TILER_DATA_VOLUME --opt o=bind
 
-time docker run -v $RAW_DATA_DIR/$PBF:/data.osm.pbf -v $TILER_VOLUME:/var/lib/postgresql/12/main $TILER_DOCKER_FULL_NAME import
+mkdir $VOLUME_DIR/$TILER_TILES_VOLUME
+docker volume create --name $TILER_TILES_VOLUME --opt type=none --opt device=$VOLUME_DIR/$TILER_TILES_VOLUME --opt o=bind
 
-docker run -p 80:80 -v $TILER_VOLUME:/var/lib/postgresql/12/main -d $TILER_DOCKER_FULL_NAME run
+mkdir $VOLUME_DIR/$TILER_NODES_VOLUME
+docker volume create --name $TILER_NODES_VOLUME --opt type=none --opt device=$VOLUME_DIR/$TILER_NODES_VOLUME --opt o=bind
+
+time docker run \
+	--name $OSM_PREFIX-tiler-server-importer \
+	-v $RAW_DATA_DIR/$PBF:/data.osm.pbf \
+	-v $TILER_DATA_VOLUME:/var/lib/postgresql/12/main \
+	-v $TILER_TILES_VOLUME:/var/lib/mod_tile \
+	-v $TILER_NODES_VOLUME:/nodes \
+	-e "OSM2PGSQL_EXTRA_ARGS=--flat-nodes /nodes/flat_nodes.bin" \
+	$TILER_DOCKER_FULL_NAME \
+	import
+
+docker run \
+	--name $OSM_PREFIX-tiler-server \
+	-p $TILER_PORT:80 \
+	-v $TILER_DATA_VOLUME:/var/lib/postgresql/12/main \
+	-v $TILER_TILES_VOLUME:/var/lib/mod_tile \
+	-e ALLOW_CORS=enabled \
+	-d $TILER_DOCKER_FULL_NAME \
+	run
 
 echo OpenStreetMap Tile-Service is ready, access the top tile via: http://localhost/tile/0/0/0.png
 
 if [ "$MAKE_BACKUP" = 1 ] ; then
 	echo creating backup of the image and the volume...
-	CREATE_BACKUP_IMAGE $TILER_DOCKER_FULL_NAME $BACKUP_DIR
-	CREATE_BACKUP_DIR $TILER_VOLUME $BACKUP_DIR $VOLUME_DIR
+	time CREATE_BACKUP_IMAGE $TILER_DOCKER_FULL_NAME $BACKUP_DIR
+	time CREATE_BACKUP_DIR $TILER_DATA_VOLUME $BACKUP_DIR $VOLUME_DIR
+	time CREATE_BACKUP_DIR $TILER_TILES_VOLUME $BACKUP_DIR $VOLUME_DIR
+	time CREATE_BACKUP_DIR $TILER_NODES_VOLUME $BACKUP_DIR $VOLUME_DIR
 	echo backup of the image and the volume is ready!
 fi
 
 
 ###############
 echo https://github.com/mediagis/nominatim-docker/tree/master/3.5
+https://nominatim.org/release-docs/latest/admin/Installation/
 
 NOMI_DOCKER_DIR=$RAW_DATA_DIR
 NOMI_DOCKER_GIT=mediagis_nominatim-docker
@@ -142,19 +170,33 @@ git clone https://github.com/$NOMI_DOCKER_NAME-docker.git $NOMI_DOCKER_DIR/$NOMI
 time docker build --pull --rm -t $NOMI_DOCKER_FULL_NAME $NOMI_DOCKER_DIR/$NOMI_DOCKER_GIT/$NOMI_DOCKER_VERSION
 
 echo running nominatim import: $NOMI_DOCKER_FULL_NAME ...
-time docker run -t -v $NOMI_BIND/postgresdata:/data -v $RAW_DATA_DIR/$PBF:/data/$PBF -v $RAW_DATA_DIR/$NOMI_WIKI:/app/src/data/$NOMI_WIKI $NOMI_DOCKER_NAME:3.5  sh /app/init.sh /data/$PBF postgresdata 4
+time docker run \
+	--name $OSM_PREFIX-nominatim-server-importer \
+	-t \	
+	-v $NOMI_BIND:/data \
+	-v $RAW_DATA_DIR/$PBF:/data/$PBF \
+	-v $RAW_DATA_DIR/$NOMI_WIKI:/app/src/data/$NOMI_WIKI \
+	$NOMI_DOCKER_FULL_NAME \
+	sh /app/init.sh /data/$PBF postgresdata 4
 
-docker run --restart=always -p 6432:5432 -p 7070:8080 -d --name nominatim -v $NOMI_BIND/postgresdata:/var/lib/postgresql/12/main $NOMI_DOCKER_NAME:3.5 bash /app/start.sh
+docker run \
+	--name $OSM_PREFIX-nominatim-server \
+	--restart=always \
+	-p 6432:5432 \
+	-p $NOMINATIM_PORT:8080 \
+	-v $NOMI_BIND/postgresdata:/var/lib/postgresql/12/main \
+	-d $NOMI_DOCKER_FULL_NAME bash /app/start.sh
 
 echo OSM Nominatim Server is Ready, access it via: http://localhost:7070/
 
 if [ "$MAKE_BACKUP" = 1 ] ; then
 	echo creating backup of the image and the volume...
-	CREATE_BACKUP_IMAGE $NOMI_DOCKER_FULL_NAME $BACKUP_DIR
-	CREATE_BACKUP_DIR $NOMI_NAME $BACKUP_DIR $VOLUME_DIR
+	time CREATE_BACKUP_IMAGE $NOMI_DOCKER_FULL_NAME $BACKUP_DIR
+	time CREATE_BACKUP_DIR $NOMI_NAME $BACKUP_DIR $VOLUME_DIR
 	echo backup of the image and the volume is ready!
 fi
 
 #######################
 
 echo Done!
+
